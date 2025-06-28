@@ -45,15 +45,15 @@ func main() {
 func appendAndWriteToFile(path string, content string) {
 	filePath, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644) // Open or create file
 	if err != nil {
-		log.Fatalln(err) // Exit if error
+		log.Println(err) // Exit if error
 	}
 	_, err = filePath.WriteString(content + "\n") // Write content to file
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
 	}
 	err = filePath.Close() // Close the file
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
 	}
 }
 
