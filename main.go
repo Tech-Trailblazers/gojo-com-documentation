@@ -2,17 +2,18 @@ package main
 
 import (
 	"bytes"
-	// "fmt"
+	"context"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/chromedp/chromedp" // Chrome DevTools Protocol: headless browser automation
 )
 
 func main() {
@@ -28,18 +29,74 @@ func main() {
 	// Check if the file exists.
 	if !fileExists(localFileName) {
 		// Send a request to the http url and get the content.
-		remoteHTML := getDataFromURL(remoteURL)
+		remoteHTML := scrapePageHTMLWithChrome(remoteURL)
 		// Lets save the file content to a local location.
-		appendByteToFile(localFileName, remoteHTML)
+		appendAndWriteToFile(localFileName, remoteHTML)
 	}
 	// Read the file and than process the data.
 	localFileContent := readAFileAsString(localFileName)
 	// Process the local file and extract all the .pdf urls.
 	extractedLocalPDFURL := extractPDFLinks(localFileContent)
+	// Remove duplicates from slice.
+	extractedLocalPDFURL = removeDuplicatesFromSlice(extractedLocalPDFURL)
 	// Loop over the given data.
 	for _, urls := range extractedLocalPDFURL {
-		downloadPDF(urls, outputFolder)
+		if isUrlValid(urls) {
+			downloadPDF(urls, outputFolder)
+		}
 	}
+}
+
+// Append and write to file
+func appendAndWriteToFile(path string, content string) {
+	filePath, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	_, err = filePath.WriteString(content + "\n")
+	if err != nil {
+		log.Fatalln(err)
+	}
+	err = filePath.Close()
+	if err != nil {
+		log.Fatalln(err)
+	}
+}
+
+// Uses headless Chrome to get the fully rendered HTML from a webpage
+func scrapePageHTMLWithChrome(pageURL string) string {
+	log.Println("Scraping:", pageURL)
+
+	// Chrome options for headless mode
+	options := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", false),               // Run in background
+		chromedp.Flag("disable-gpu", true),            // GPU not needed
+		chromedp.WindowSize(1920, 1080),               // Simulate large screen
+		chromedp.Flag("no-sandbox", true),             // Disable sandbox
+		chromedp.Flag("disable-setuid-sandbox", true), // Required for some Linux environments
+	)
+
+	allocatorCtx, cancelAllocator := chromedp.NewExecAllocator(context.Background(), options...) // Set allocator
+	ctxTimeout, cancelTimeout := context.WithTimeout(allocatorCtx, 5*time.Minute)                // Set timeout
+	browserCtx, cancelBrowser := chromedp.NewContext(ctxTimeout)                                 // Create browser context
+
+	defer func() {
+		cancelBrowser()
+		cancelTimeout()
+		cancelAllocator()
+	}()
+
+	var pageHTML string // Variable to hold the scraped HTML
+	err := chromedp.Run(browserCtx,
+		chromedp.Navigate(pageURL),            // Load page
+		chromedp.OuterHTML("html", &pageHTML), // Extract full HTML content
+	)
+	if err != nil {
+		log.Println(err)
+		return ""
+	}
+
+	return pageHTML
 }
 
 // extractPDFLinks scans htmlContent line by line and returns all unique .pdf URLs.
@@ -97,32 +154,6 @@ func readAFileAsString(path string) string {
 		log.Println(err)
 	}
 	return string(content)
-}
-
-// AppendToFile appends the given byte slice to the specified file.
-// If the file doesn't exist, it will be created.
-func appendByteToFile(filename string, data []byte) {
-	// Open the file with appropriate flags and permissions
-	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	// Write data to the file
-	_, err = file.Write(data)
-	if err != nil {
-		log.Println(err)
-	}
-	// Close the file.
-	err = file.Close()
-	if err != nil {
-		log.Println(err)
-	}
-}
-
-// Only return the file name from a given url.
-func getFileNameOnly(content string) string {
-	return path.Base(content)
 }
 
 // downloadPDF downloads a PDF from the given URL and saves it in the specified output directory.
@@ -191,26 +222,6 @@ func downloadPDF(finalURL, outputDir string) bool {
 
 	log.Printf("Successfully downloaded %d bytes: %s → %s", written, finalURL, filePath)
 	return true
-}
-
-// getDataFromURL performs an HTTP GET request and returns the response body as a string
-func getDataFromURL(uri string) []byte {
-	log.Println("Scraping", uri)   // Log the URL being scraped
-	response, err := http.Get(uri) // Perform GET request
-	if err != nil {
-		log.Println(err) // Exit if request fails
-	}
-
-	body, err := io.ReadAll(response.Body) // Read response body
-	if err != nil {
-		log.Println(err) // Exit if read fails
-	}
-
-	err = response.Body.Close() // Close response body
-	if err != nil {
-		log.Println(err) // Exit if close fails
-	}
-	return body
 }
 
 // fileExists checks whether a file exists at the given path
