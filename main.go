@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	// "fmt"
 	"io"
 	"log"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -24,12 +26,77 @@ func main() {
 		createDirectory(outputFolder, 0o755)
 	}
 	// Check if the file exists.
-	if fileExists(localFileName) {
+	if !fileExists(localFileName) {
 		// Send a request to the http url and get the content.
 		remoteHTML := getDataFromURL(remoteURL)
 		// Lets save the file content to a local location.
 		appendByteToFile(localFileName, remoteHTML)
 	}
+	// Read the file and than process the data.
+	localFileContent := readAFileAsString(localFileName)
+	// Process the local file and extract all the .pdf urls.
+	extractedLocalPDFURL := extractPDFLinks(localFileContent)
+	// Loop over the given data.
+	for _, urls := range extractedLocalPDFURL {
+		downloadPDF(urls, outputFolder)
+	}
+}
+
+// extractPDFLinks scans htmlContent line by line and returns all unique .pdf URLs.
+func extractPDFLinks(htmlContent string) []string {
+	// Regex to match http(s) URLs ending in .pdf (with optional query/fragments)
+	pdfRegex := regexp.MustCompile(`https?://[^\s"'<>]+?\.pdf(?:\?[^\s"'<>]*)?`)
+
+	seen := make(map[string]struct{})
+	var links []string
+
+	// Process each line separately
+	for _, line := range strings.Split(htmlContent, "\n") {
+		for _, match := range pdfRegex.FindAllString(line, -1) {
+			if _, ok := seen[match]; !ok {
+				seen[match] = struct{}{}
+				links = append(links, match)
+			}
+		}
+	}
+
+	return links
+}
+
+// urlToFilename converts a URL into a filesystem-safe filename
+func urlToFilename(rawURL string) string {
+	parsed, err := url.Parse(rawURL) // Parse the URL
+	// Print the errors if any.
+	if err != nil {
+		log.Println(err) // Log error
+		return ""        // Return empty string on error
+	}
+	filename := parsed.Host // Start with host name
+	// Parse the path and if its not empty replace them with valid characters.
+	if parsed.Path != "" {
+		filename += "_" + strings.ReplaceAll(parsed.Path, "/", "_") // Append path
+	}
+	if parsed.RawQuery != "" {
+		filename += "_" + strings.ReplaceAll(parsed.RawQuery, "&", "_") // Append query
+	}
+	invalidChars := []string{`"`, `\`, `/`, `:`, `*`, `?`, `<`, `>`, `|`, `-`} // Define illegal filename characters
+	// Loop over the invalid characters and replace them.
+	for _, char := range invalidChars {
+		filename = strings.ReplaceAll(filename, char, "_") // Replace each with underscore
+	}
+	if getFileExtension(filename) != ".pdf" {
+		filename = filename + ".pdf"
+	}
+	return strings.ToLower(filename) // Return sanitized filename
+}
+
+// Read a file and return the contents
+func readAFileAsString(path string) string {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		log.Println(err)
+	}
+	return string(content)
 }
 
 // AppendToFile appends the given byte slice to the specified file.
@@ -62,7 +129,7 @@ func getFileNameOnly(content string) string {
 // It uses a WaitGroup to support concurrent execution and returns true if the download succeeded.
 func downloadPDF(finalURL, outputDir string) bool {
 	// Sanitize the URL to generate a safe file name
-	filename := getFileNameOnly(finalURL)
+	filename := urlToFilename(finalURL)
 
 	// Construct the full file path in the output directory
 	filePath := filepath.Join(outputDir, filename)
